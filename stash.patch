@@ -1,0 +1,102 @@
+Index: pcapsipdump.cpp
+===================================================================
+--- pcapsipdump.cpp	(revision 157)
++++ pcapsipdump.cpp	(working copy)
+@@ -127,11 +127,19 @@
+     return false;
+ }
+ 
+-int parse_sdp(const char *sdp, size_t sdplen, calltable_element *ce)
++int parse_sdp(const char *sdp, size_t sdplen, char *private_ip, char *public_ip, calltable_element *ce)
+ {
+     in_addr_t addr;
++    in_addr_t pub;
++    in_addr_t pri;
++
+     unsigned short port;
+     if (! get_ip_port_from_sdp(sdp, sdplen, &addr, &port)){
++        if (public_ip && private_ip) {
++          inet_pton(AF_INET, public_ip, &pub);
++          inet_pton(AF_INET, private_ip, &pri);
++          if (addr == pub) addr = pri;
++        }
+         ct->add_ip_port(ce, addr, port);
+     }else{
+         if (verbosity >= 2) {
+@@ -157,6 +165,8 @@
+     char *opt_fntemplate;
+     char *ifname;/* interface to sniff on */
+     char *fname;/* pcap file to read on */
++    char *private_ip; /* private IP address */
++    char *public_ip; /* public IP address */
+     char errbuf[PCAP_ERRBUF_SIZE];/* Error string */
+     struct bpf_program fp;/* The compiled filter */
+     char filter_exp[MAX_PCAP_FILTER_EXPRESSION] = "";
+@@ -189,6 +199,8 @@
+     }
+     ifname=NULL;
+     fname=NULL;
++    private_ip=NULL;
++    public_ip=NULL;
+     regcomp(&method_filter, "^(INVITE|OPTIONS|REGISTER)$", REG_EXTENDED);
+     trigger.init();
+ 
+@@ -195,7 +207,7 @@
+     while(1) {
+         signed char c;
+ 
+-        c = getopt (argc, argv, "i:r:d:v:m:n:R:l:B:T:t:P:fpU");
++        c = getopt (argc, argv, "i:r:d:v:m:n:R:l:B:T:t:P:N:fpU");
+         if (c == -1)
+             break;
+ 
+@@ -272,6 +284,26 @@
+             case 'P':
+                 pid_file = optarg;
+                 break;
++            case 'N':
++                // split the string into two parts, separated by ':'
++                char *p = strchr(optarg, ':');
++                if (p) {
++                    *p = '\0';
++                    public_ip = optarg;
++                    private_ip = p+1;
++                    // make sure public and private ip are valid IP addresses
++                    if (inet_addr(private_ip) == INADDR_NONE ||
++                        inet_addr(public_ip) == INADDR_NONE) {
++                        fprintf(stderr, "Invalid option '-N %s'.\n"
++                                        "  Argument should be two IP addresses separated by ':'.\n", optarg);
++                        return(1);
++                    }
++                    fprintf(stderr, "Mapping public IP address %s to private IP address %s\n", public_ip, private_ip);
++                } else {
++                    fprintf(stderr, "Invalid option '-M %s'.\n"
++                                    "  Argument should be 'public_ip:private_ip'.\n", optarg);
++                    return(1);
++                }
+         }
+     }
+ 
+@@ -302,6 +334,8 @@
+ 		" -B   Set the operating system capture buffer size, a.k.a. ring buffer size.\n"
+ 		"      This can be expressed in bytes/KB(*1000)/KiB(*1024)/MB/MiB/GB/GiB. ex.: '-B 64MiB'\n"
+ 		"      Set this to few MiB or more to avoid packets dropped by kernel.\n"
++    " -N   Public_IP:Private_IP. In case of having both a private and a public IP, " 
++              "so that RTP packets are captured as being sent to the private IP instead of the public IP\n"
+ 		" -R   RTP filter. Specifies what kind of RTP information to include in capture:\n"
+ 		"      'rtp+rtcp' (default), 'rtp', 'rtpevent', 't38', or 'none'.\n"
+ 		" -m   Method-filter. Default is '^(INVITE|OPTIONS|REGISTER)$'\n"
+@@ -642,11 +676,11 @@
+                           gettag(data,datalen,"c:",&l);
+                         if (l > 0 && s && strncasecmp(s, "application/sdp", l) == 0 &&
+                                 (sdp = strstr(data,"\r\n\r\n")) != NULL) {
+-                            parse_sdp(sdp, datalen - (sdp - data), &ct->table[idx]);
++                            parse_sdp(sdp, datalen - (sdp - data), private_ip, public_ip, &ct->table[idx]);
+                         } else if (l > 0 && s && strncasecmp(s, "multipart/mixed;boundary=", MIN(l,25)) == 0 &&
+                                 (sdp = strstr(data,"\r\n\r\n")) != NULL) {
+                             // FIXME: do proper mime miltipart parsing
+-                            parse_sdp(sdp, datalen - (sdp - data), &ct->table[idx]);
++                            parse_sdp(sdp, datalen - (sdp - data), private_ip, public_ip, &ct->table[idx]);
+                         }
+                         if (ct->table[idx].f_pcap!=NULL){
+                             pcap_dump((u_char *)ct->table[idx].f_pcap,pkt_header,pkt_data);
