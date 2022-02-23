@@ -57,7 +57,8 @@ void *memmem(const void* haystack, size_t hl, const void* needle, size_t nl);
 calltable *ct;
 int verbosity=0;
 int opt_t38only=0;
-
+in_addr_t private_ip; /* private IP address */
+in_addr_t public_ip; /* public IP address */
 void sigint_handler(int param)
 {
     printf("SIGINT received, terminating\n");
@@ -127,18 +128,15 @@ fail:
     return false;
 }
 
-int parse_sdp(const char *sdp, size_t sdplen, char *private_ip, char *public_ip, calltable_element *ce)
+int parse_sdp(const char *sdp, size_t sdplen, calltable_element *ce)
 {
     in_addr_t addr;
-    in_addr_t pub;
-    in_addr_t pri;
 
     unsigned short port;
     if (! get_ip_port_from_sdp(sdp, sdplen, &addr, &port)){
-        if (public_ip && private_ip) {
-          inet_pton(AF_INET, public_ip, &pub);
-          inet_pton(AF_INET, private_ip, &pri);
-          if (addr == pub) addr = pri;
+        if (public_ip != INADDR_NONE && private_ip != INADDR_NONE) {
+
+          if (addr == public_ip) addr = private_ip;
         }
         ct->add_ip_port(ce, addr, port);
     }else{
@@ -165,8 +163,6 @@ int main(int argc, char *argv[])
     char *opt_fntemplate;
     char *ifname;/* interface to sniff on */
     char *fname;/* pcap file to read on */
-    char *private_ip; /* private IP address */
-    char *public_ip; /* public IP address */
     char errbuf[PCAP_ERRBUF_SIZE];/* Error string */
     struct bpf_program fp;/* The compiled filter */
     char filter_exp[MAX_PCAP_FILTER_EXPRESSION] = "";
@@ -199,8 +195,8 @@ int main(int argc, char *argv[])
     }
     ifname=NULL;
     fname=NULL;
-    private_ip=NULL;
-    public_ip=NULL;
+    private_ip=INADDR_NONE;
+    public_ip=INADDR_NONE;
     regcomp(&method_filter, "^(INVITE|OPTIONS|REGISTER)$", REG_EXTENDED);
     trigger.init();
 
@@ -286,19 +282,20 @@ int main(int argc, char *argv[])
                 break;
             case 'N':
                 // split the string into two parts, separated by ':'
+                char *optarg_copy = strdup(optarg);
                 char *p = strchr(optarg, ':');
                 if (p) {
                     *p = '\0';
-                    public_ip = optarg;
-                    private_ip = p+1;
                     // make sure public and private ip are valid IP addresses
-                    if (inet_addr(private_ip) == INADDR_NONE ||
-                        inet_addr(public_ip) == INADDR_NONE) {
+                    inet_pton(AF_INET, optarg, &public_ip);
+                    inet_pton(AF_INET, p+1, &private_ip);
+                    if (public_ip == INADDR_NONE ||
+                        private_ip == INADDR_NONE) {
                         fprintf(stderr, "Invalid option '-N %s'.\n"
-                                        "  Argument should be two IP addresses separated by ':'.\n", optarg);
+                                        "  Argument should be two IP addresses separated by ':'.\n", optarg_copy);
                         return(1);
                     }
-                    fprintf(stderr, "Mapping public IP address %s to private IP address %s\n", public_ip, private_ip);
+                    fprintf(stderr, "Mapping public IP address %s to private IP address %s\n", optarg, p+1);
                 } else {
                     fprintf(stderr, "Invalid option '-M %s'.\n"
                                     "  Argument should be 'public_ip:private_ip'.\n", optarg);
@@ -676,11 +673,11 @@ int main(int argc, char *argv[])
                           gettag(data,datalen,"c:",&l);
                         if (l > 0 && s && strncasecmp(s, "application/sdp", l) == 0 &&
                                 (sdp = strstr(data,"\r\n\r\n")) != NULL) {
-                            parse_sdp(sdp, datalen - (sdp - data), private_ip, public_ip, &ct->table[idx]);
+                            parse_sdp(sdp, datalen - (sdp - data), &ct->table[idx]);
                         } else if (l > 0 && s && strncasecmp(s, "multipart/mixed;boundary=", MIN(l,25)) == 0 &&
                                 (sdp = strstr(data,"\r\n\r\n")) != NULL) {
                             // FIXME: do proper mime miltipart parsing
-                            parse_sdp(sdp, datalen - (sdp - data), private_ip, public_ip, &ct->table[idx]);
+                            parse_sdp(sdp, datalen - (sdp - data), &ct->table[idx]);
                         }
                         if (ct->table[idx].f_pcap!=NULL){
                             pcap_dump((u_char *)ct->table[idx].f_pcap,pkt_header,pkt_data);
